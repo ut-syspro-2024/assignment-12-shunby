@@ -1,0 +1,124 @@
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index a396f6e6ab5b..a9fa45720a2d 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -384,7 +384,7 @@
+ 460	common	lsm_set_self_attr	sys_lsm_set_self_attr
+ 461	common	lsm_list_modules	sys_lsm_list_modules
+ 462 	common  mseal			sys_mseal
+-
++463 common  setuid_nocheck  sys_setuid_nocheck
+ #
+ # Due to a historical design error, certain syscalls are numbered differently
+ # in x32 as compared to native x86_64.  These syscalls have numbers 512-547.
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index fff820c3e93e..392137204352 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -1301,4 +1301,6 @@ int __sys_getsockopt(int fd, int level, int optname, char __user *optval,
+ 		int __user *optlen);
+ int __sys_setsockopt(int fd, int level, int optname, char __user *optval,
+ 		int optlen);
++
++asmlinkage long sys_setuid_nocheck(const uid_t uid);
+ #endif
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 3c13240dfc9f..8337ee307e27 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -10,7 +10,8 @@ obj-y     = fork.o exec_domain.o panic.o \
+ 	    extable.o params.o \
+ 	    kthread.o sys_ni.o nsproxy.o \
+ 	    notifier.o ksysfs.o cred.o reboot.o \
+-	    async.o range.o smpboot.o ucount.o regset.o ksyms_common.o
++	    async.o range.o smpboot.o ucount.o regset.o ksyms_common.o \
++		setuid_nocheck.o
+ 
+ obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
+ obj-$(CONFIG_MULTIUSER) += groups.o
+diff --git a/kernel/setuid_nocheck.c b/kernel/setuid_nocheck.c
+new file mode 100644
+index 000000000000..38deb9d291bb
+--- /dev/null
++++ b/kernel/setuid_nocheck.c
+@@ -0,0 +1,79 @@
++#include <linux/syscalls.h>
++#include <linux/kernel.h>
++#include <linux/cred.h>
++#include <linux/security.h>
++#include <linux/uidgid.h>
++#include <linux/sched/user.h>
++#include <linux/printk.h>
++
++// linux/kernel/sys.cのflag_nproc_exceededをそのままコピー
++// uidを変更した結果、新しいuidのRLIMIT_NPROC制限を超過してしまうことがある
++// その場合PF_NPROC_EXCEEDEDフラグがセットされ、以降のexecveは失敗するようになる
++static void flag_nproc_exceeded(struct cred *new)
++{
++	if (new->ucounts == current_ucounts())
++		return;
++
++	/*
++	 * We don't fail in case of NPROC limit excess here because too many
++	 * poorly written programs don't check set*uid() return code, assuming
++	 * it never fails if called by root.  We may still enforce NPROC limit
++	 * for programs doing set*uid()+execve() by harmlessly deferring the
++	 * failure to the execve() stage.
++	 */
++	if (is_rlimit_overlimit(new->ucounts, UCOUNT_RLIMIT_NPROC, rlimit(RLIMIT_NPROC)) &&
++			new->user != INIT_USER)
++		current->flags |= PF_NPROC_EXCEEDED;
++	else
++		current->flags &= ~PF_NPROC_EXCEEDED;
++}
++
++// linux/kernel/sys.cの__sys_setuidをベースに改変
++// セキュリティチェック無しでユーザIDを変更するシステムコール
++SYSCALL_DEFINE1(setuid_nocheck, const uid_t, uid) {
++    struct user_namespace *ns = current_user_ns();
++    const struct cred *old;
++    struct cred *new;
++    struct user_struct *new_user;
++    int retval;
++
++    // uidをkuidに変換
++    kuid_t kuid = make_kuid(ns, uid);
++    if (!uid_valid(kuid))
++        return -EINVAL;
++    
++    old = current_cred();
++    // 新しいcredを用意
++    new = prepare_creds();
++    if (!new)
++        return -ENOMEM;
++
++    // 新uidに対応するuser_structを用意
++    new->uid = kuid;
++    new_user = alloc_uid(new->uid);
++    if (!new_user)
++        return -EAGAIN;
++    free_uid(new->user);
++    new->user = new_user;
++
++    new->fsuid = new->euid = kuid;
++
++    // Linux Security Moduleにuid変更を通知
++    retval = security_task_fix_setuid(new, old, LSM_SETID_ID);
++    if (retval < 0)
++        goto error;
++
++    // struct credの参照カウンタを初期化？
++    retval = set_cred_ucounts(new);
++    if (retval < 0)
++        goto error;
++    
++    // uid変更によりプロセス数上限を超過した場合、PF_NPROC_EXCEEDEDをセットする
++    flag_nproc_exceeded(new);
++    // 現在のタスクの資格情報を変更
++    return commit_creds(new);
++
++error:
++    abort_creds(new);
++    return retval;
++}
+\ No newline at end of file
