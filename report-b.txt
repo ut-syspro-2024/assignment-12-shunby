@@ -1,0 +1,38 @@
+`setuid_nocheck`システムコールを追加した。
+このシステムコールは通常の`setuid`と同様に動作するが、`CAP_SETUID`ケイパビリティの確認を行わない。
+よって、このシステムコールを使えば特権を持たないプログラムのuidを自由にrootのものに変更できるはずである。
+
+`kernel/sys.c`の`__sys_setuid`関数を改変して`sys_setuid_nocheck`を実装した。
+追加したシステムコールは以下のように動作する。
+1. 引数のuidをkuid(カーネル側で使われるuid)に変換する
+2. 新しいkuidに対応する`struct cred`構造体を初期化する
+3. `security_task_fix_setuid`関数でLinux Security Moduleにuid変更を通知する
+4. 現在存在するプロセスの数が新しいuidに設定されたプロセス数上限`RLIMIT_NPROC`を超過した場合、`PF_NPROC_EXCEEDED`をセットする
+    - `PF_NPROC_EXCEEDED`がセットされると、`execve`などで新規プロセスを作成することができなくなる
+      (参考：man execve)
+5. `commit_cred`関数により、現在のプロセスの資格情報を2.で初期化した`struct cred`に変更する
+
+`myapp`コマンドは、`setuid_nocheck`によりユーザIDを0に設定した状態で指定されたコマンドを実行する。
+以下の実行例では、非特権ユーザ`neko`から`/bin/ls`を削除することに成功している。
+```
+Welcome to Buildroot
+buildroot login: root
+# adduser neko
+adduser: /home/neko: No such file or directory
+Changing password for neko
+New password:
+Bad password: too short
+Retype password:
+passwd: password for neko changed by root
+#
+
+Welcome to Buildroot
+buildroot login: neko
+Password:
+login: can't change directory to '/home/neko': No such file or directory
+$ rm /bin/ls
+rm: can't remove '/bin/ls': Permission denied
+$ myapp rm /bin/ls
+$ ls
+-sh: ls: not found
+```

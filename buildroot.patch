@@ -1,0 +1,75 @@
+diff --git a/package/Config.in b/package/Config.in
+index 48ef1a6fdc..6b7019515a 100644
+--- a/package/Config.in
++++ b/package/Config.in
+@@ -2854,4 +2854,8 @@ menu "Text editors and viewers"
+ 	source "package/vim/Config.in"
+ endmenu
+ 
++menu "myapp"
++	source "package/myapp/Config.in"
++endmenu
++
+ endmenu
+diff --git a/package/myapp/Config.in b/package/myapp/Config.in
+new file mode 100644
+index 0000000000..c94286eaba
+--- /dev/null
++++ b/package/myapp/Config.in
+@@ -0,0 +1,4 @@
++config BR2_PACKAGE_MYAPP
++    bool "myapp"
++    help
++        Just for testing and debugging our new syscall
+diff --git a/package/myapp/myapp.mk b/package/myapp/myapp.mk
+new file mode 100644
+index 0000000000..6f25620685
+--- /dev/null
++++ b/package/myapp/myapp.mk
+@@ -0,0 +1,11 @@
++PACKAGE_NAME = myapp
++MYAPP_VERSION = 0.1
++MYAPP_SITE = package/myapp/src
++MYAPP_SITE_METHOD = local
++define MYAPP_BUILD_CMDS
++	$(TARGET_MAKE_ENV) $(TARGET_CONFIGURE_OPTS) $(MAKE) -C $(@D)
++endef
++define MYAPP_INSTALL_TARGET_CMDS
++	$(INSTALL) -D -m 0755 $(@D)/myapp $(TARGET_DIR)/usr/bin
++endef
++$(eval $(generic-package))
+diff --git a/package/myapp/src/Makefile b/package/myapp/src/Makefile
+new file mode 100644
+index 0000000000..732bffef47
+--- /dev/null
++++ b/package/myapp/src/Makefile
+@@ -0,0 +1,5 @@
++myapp: myapp.o
++
++.PHONY: clean
++clean:
++	rm -rf *.o myapp
+diff --git a/package/myapp/src/myapp.c b/package/myapp/src/myapp.c
+new file mode 100644
+index 0000000000..08855a2156
+--- /dev/null
++++ b/package/myapp/src/myapp.c
+@@ -0,0 +1,18 @@
++#include <unistd.h>
++#include <string.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++int main(int argc, char **argv) {
++    if (argc <= 1) {
++        fprintf(stderr, "myapp COMMAND");
++        return 1;
++    }
++    int ret = syscall(463, 0);
++    if (ret < 0) {
++        fprintf(stderr, "failed\n") ;
++        return ret;
++    }
++    execvp(argv[1], &argv[1]);
++    return 1;
++}
